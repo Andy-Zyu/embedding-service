@@ -16,6 +16,7 @@ GPU_COUNT=0
 GPU_IDS=()
 GPU_MEMORY=0
 INSTANCE_COUNT=0
+SERVICE_PORT=9000
 ENABLE_TEST=false
 TEST_TYPE=""
 TEST_CONCURRENCY=0
@@ -167,6 +168,31 @@ configure_cpu() {
     INSTANCE_COUNT=$cpu_instances
 }
 
+# 配置服务端口
+configure_port() {
+    echo ""
+    print_info "端口配置"
+    
+    if [ $INSTANCE_COUNT -gt 1 ]; then
+        read -p "请输入Nginx负载均衡器端口 (默认: 9000): " port
+        if [ -z "$port" ]; then
+            SERVICE_PORT=9000
+        else
+            SERVICE_PORT=$port
+        fi
+        print_info "Nginx将监听端口: $SERVICE_PORT (暴露到宿主机)"
+        print_info "后端 $INSTANCE_COUNT 个实例将在Docker内部网络通信（不暴露端口）"
+    else
+        read -p "请输入服务端口 (默认: 9000): " port
+        if [ -z "$port" ]; then
+            SERVICE_PORT=9000
+        else
+            SERVICE_PORT=$port
+        fi
+        print_info "服务将监听端口: $SERVICE_PORT"
+    fi
+}
+
 # 构建镜像
 build_image() {
     echo ""
@@ -194,14 +220,26 @@ EOF
     if [ "$VERSION" == "cpu" ]; then
         # CPU版本配置
         for i in $(seq 1 $INSTANCE_COUNT); do
-            port=$((8079 + i))
-            cat >> "$compose_file" <<EOF
+            # 单实例时暴露端口到宿主机，多实例时只在内部网络通信
+            if [ $INSTANCE_COUNT -eq 1 ]; then
+                cat >> "$compose_file" <<EOF
   embedding-service-cpu-${i}:
     image: embedding-service:cpu
     container_name: embedding-service-cpu-${i}
     ports:
-      - "${port}:8080"
+      - "${SERVICE_PORT}:8080"
     environment:
+EOF
+            else
+                cat >> "$compose_file" <<EOF
+  embedding-service-cpu-${i}:
+    image: embedding-service:cpu
+    container_name: embedding-service-cpu-${i}
+    environment:
+EOF
+            fi
+            
+            cat >> "$compose_file" <<EOF
       - MODEL_NAME=google/siglip2-so400m-patch16-naflex
       - PORT=8080
       - HOST=0.0.0.0
@@ -221,52 +259,6 @@ EOF
 
 EOF
         done
-    else
-        # GPU版本配置
-        for i in $(seq 1 $INSTANCE_COUNT); do
-            port=$((8079 + i))
-            gpu_id=${GPU_IDS[$((i-1))]}
-            workers=$((GPU_MEMORY / 2))
-            if [ $workers -lt 1 ]; then
-                workers=1
-            elif [ $workers -gt 4 ]; then
-                workers=4
-            fi
-            
-            cat >> "$compose_file" <<EOF
-  embedding-service-gpu-${i}:
-    image: embedding-service:gpu
-    container_name: embedding-service-gpu-${i}
-    ports:
-      - "${port}:8080"
-    environment:
-      - MODEL_NAME=google/siglip2-so400m-patch16-naflex
-      - PORT=8080
-      - HOST=0.0.0.0
-      - WORKERS=${workers}
-      - THREADS=4
-      - CUDA_VISIBLE_DEVICES=${gpu_id}
-    volumes:
-      - huggingface_cache:/app/.cache/huggingface
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['${gpu_id}']
-              capabilities: [gpu]
-    networks:
-      - embedding-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-
-EOF
-        done
     fi
     
     # 添加Nginx负载均衡（如果多个实例）
@@ -276,7 +268,7 @@ EOF
     image: nginx:alpine
     container_name: embedding-nginx-lb
     ports:
-      - "80:80"
+      - "${SERVICE_PORT}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
@@ -435,18 +427,9 @@ start_services() {
     local healthy=0
     local max_attempts=30
     for i in $(seq 1 $max_attempts); do
-        if [ $INSTANCE_COUNT -gt 1 ]; then
-            # 多实例通过Nginx检查
-            if curl -s http://localhost/health > /dev/null 2>&1; then
-                healthy=1
-                break
-            fi
-        else
-            # 单实例直接检查
-            if curl -s http://localhost:8080/health > /dev/null 2>&1; then
-                healthy=1
-                break
-            fi
+        if curl -s http://localhost:${SERVICE_PORT}/health > /dev/null 2>&1; then
+            healthy=1
+            break
         fi
         if [ $i -lt $max_attempts ]; then
             echo -n "."
@@ -472,10 +455,7 @@ start_services() {
 
 # 运行并发测试
 run_benchmark() {
-    local url="http://localhost"
-    if [ $INSTANCE_COUNT -eq 1 ]; then
-        url="http://localhost:8080"
-    fi
+    local url="http://localhost:${SERVICE_PORT}"
     
     local concurrency=$1
     local test_type=$2
@@ -852,6 +832,8 @@ main() {
         configure_cpu
     fi
     
+    configure_port
+    
     build_image
     
     if [ $INSTANCE_COUNT -gt 1 ]; then
@@ -870,10 +852,9 @@ main() {
     print_success "部署完成！"
     echo ""
     echo "服务访问地址:"
+    echo "  http://localhost:${SERVICE_PORT}"
     if [ $INSTANCE_COUNT -gt 1 ]; then
-        echo "  通过Nginx: http://localhost"
-    else
-        echo "  直接访问: http://localhost:8080"
+        echo "  (通过Nginx负载均衡，后端 ${INSTANCE_COUNT} 个实例)"
     fi
     echo ""
     echo "管理命令:"
