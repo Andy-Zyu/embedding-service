@@ -70,6 +70,15 @@ GET /health
 
 ## 构建镜像
 
+### 配置国内镜像源（推荐）
+
+为了加速构建，已内置以下国内镜像源配置：
+- ✅ **pip镜像源**: 清华大学镜像（`pypi.tuna.tsinghua.edu.cn`）
+- ✅ **HuggingFace镜像**: `hf-mirror.com`
+
+**Docker基础镜像加速**（可选）：
+如需加速Docker基础镜像拉取，请配置Docker镜像加速器，详见 [DOCKER_MIRROR_SETUP.md](DOCKER_MIRROR_SETUP.md)
+
 ### CPU版本
 ```bash
 cd /data/embedding-service
@@ -80,6 +89,9 @@ docker build -f cpu/Dockerfile -t embedding-service:cpu .
 ```bash
 cd /data/embedding-service
 docker build -f gpu/Dockerfile -t embedding-service:gpu .
+
+# 如果在Apple Silicon Mac上构建（会显示平台警告，但可以正常构建）
+# Docker会自动处理平台转换，构建的镜像可以在Linux服务器上使用
 ```
 
 ## 运行容器
@@ -106,20 +118,78 @@ docker run -d \
 
 ## 使用Docker Compose
 
-### 启动CPU版本
+### 单实例部署（适合中小规模）
+
 ```bash
-docker-compose up -d embedding-service-cpu
+# 启动CPU版本
+docker compose up -d embedding-service-cpu
+
+# 启动GPU版本
+docker compose up -d embedding-service-gpu
+
+# 同时启动两个版本
+docker compose up -d
 ```
 
-### 启动GPU版本
+### 多实例横向扩展（适合大规模并发）
+
+**方案1: 使用Docker Compose Scale（推荐）**
+
 ```bash
-docker-compose up -d embedding-service-gpu
+# 启动3个CPU实例 + 2个GPU实例
+docker compose -f docker-compose.scale.yml up -d \
+  --scale embedding-service-cpu=3 \
+  --scale embedding-service-gpu=2
+
+# 查看运行状态
+docker compose -f docker-compose.scale.yml ps
 ```
 
-### 同时启动两个版本
+**方案2: 使用Nginx负载均衡（统一入口）**
+
 ```bash
-docker-compose up -d
+# 启动多实例 + Nginx负载均衡器
+docker compose -f docker-compose.scale.yml up -d \
+  --scale embedding-service-cpu=3 \
+  --scale embedding-service-gpu=2
+
+# 通过Nginx访问（端口80）
+curl http://localhost/health
 ```
+
+## 并发性能策略
+
+### Docker内部并发（单实例优化）
+
+每个Docker容器内部使用 **Gunicorn** 进行并发优化：
+
+- **CPU版本**: 4 workers × 2 threads = **8并发**
+- **GPU版本**: 2 workers × 4 threads = **8并发**
+
+**适用场景**: 中小规模并发（100-200 RPS）
+
+### Docker Compose横向扩展（大规模并发）
+
+通过启动多个Docker实例实现横向扩展：
+
+- **3个CPU实例**: 3 × 8并发 = **24并发**，约 **150-300 RPS**
+- **5个GPU实例**: 5 × 8并发 = **40并发**，约 **1000-2000 RPS**
+
+**适用场景**: 大规模并发（1000+ RPS）
+
+### 推荐配置
+
+| 并发需求 | CPU实例数 | GPU实例数 | 预期RPS |
+|---------|----------|----------|---------|
+| 小规模（<100） | 1 | 1 | 50-200 |
+| 中规模（100-500） | 2-3 | 1-2 | 200-1000 |
+| 大规模（500-2000） | 5-10 | 3-5 | 1000-5000 |
+| 超大规模（2000+） | 10+ | 5+ | 5000+ |
+
+**注意**: 
+- Docker内部并发（Gunicorn）是**单实例优化**，受限于单机资源
+- Docker Compose横向扩展是**多实例扩展**，可以突破单机限制
+- **推荐**: 先用Docker内部并发，需要更高并发时再横向扩展
 
 ## 环境变量
 
@@ -128,6 +198,10 @@ docker-compose up -d
 | `MODEL_NAME` | `google/siglip2-so400m-patch16-naflex` | HuggingFace模型名称 |
 | `PORT` | `8080` | 服务监听端口 |
 | `HOST` | `0.0.0.0` | 服务监听地址 |
+| `WORKERS` | `4` (CPU) / `2` (GPU) | Gunicorn worker进程数 |
+| `THREADS` | `2` | 每个worker的线程数 |
+| `WORKER_CLASS` | `sync` | Worker类型（sync/gevent/gthread） |
+| `TIMEOUT` | `120` | 请求超时时间（秒） |
 | `CUDA_VISIBLE_DEVICES` | `0` | GPU版本使用的GPU设备ID |
 
 ## 挂载HuggingFace缓存（可选）
@@ -172,33 +246,7 @@ curl -X POST http://localhost:8080/embed \
 - **CPU版本**: 适合小规模使用或测试，推理速度较慢
 - **GPU版本**: 推荐生产环境使用，推理速度快10-100倍（取决于GPU型号）
 
-## 生产环境部署（推荐）
-
-### 使用Gunicorn生产版本
-
-**构建生产版本镜像**:
-```bash
-# CPU版本
-docker build -f cpu/Dockerfile.prod -t embedding-service:cpu-prod .
-
-# GPU版本
-docker build -f gpu/Dockerfile.prod -t embedding-service:gpu-prod .
-```
-
-**使用Docker Compose部署生产版本**:
-```bash
-docker-compose -f docker-compose.prod.yml up -d
-```
-
-**生产版本优势**:
-- ✅ 使用Gunicorn WSGI服务器，性能更好
-- ✅ 支持多进程/多线程，并发能力提升3-5倍
-- ✅ 更好的资源管理和稳定性
-- ✅ 支持优雅重启和健康检查
-
-**性能对比**:
-- 开发版本（Flask）: 30-50并发，15-25 RPS
-- 生产版本（Gunicorn）: 100-200并发，50-100 RPS（CPU）/ 200-400 RPS（GPU）
+**所有版本默认使用Gunicorn生产配置**，已优化并发性能。
 
 详细性能分析请参考 [CONCURRENCY_ANALYSIS.md](CONCURRENCY_ANALYSIS.md)
 

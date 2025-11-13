@@ -35,6 +35,7 @@ env/
 
 # Docker
 *.log
+docker-compose.deploy.yml
 
 # Cache
 .cache/
