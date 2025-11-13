@@ -52,3 +52,9 @@ Thumbs.db
 test_*.json
 *.test
 
+# Secrets and tokens (IMPORTANT!)
+.env
+*.token
+*_token
+GITHUB_TOKEN
+.env.local
