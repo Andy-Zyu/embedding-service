@@ -259,6 +259,64 @@ EOF
 
 EOF
         done
+    else
+        # GPU版本配置
+        for i in $(seq 1 $INSTANCE_COUNT); do
+            gpu_id=${GPU_IDS[$((i-1))]}
+            workers=$((GPU_MEMORY / 2))
+            if [ $workers -lt 1 ]; then
+                workers=1
+            elif [ $workers -gt 4 ]; then
+                workers=4
+            fi
+            
+            # 单实例时暴露端口到宿主机，多实例时只在内部网络通信
+            if [ $INSTANCE_COUNT -eq 1 ]; then
+                cat >> "$compose_file" <<EOF
+  embedding-service-gpu-${i}:
+    image: embedding-service:gpu
+    container_name: embedding-service-gpu-${i}
+    ports:
+      - "${SERVICE_PORT}:8080"
+    environment:
+EOF
+            else
+                cat >> "$compose_file" <<EOF
+  embedding-service-gpu-${i}:
+    image: embedding-service:gpu
+    container_name: embedding-service-gpu-${i}
+    environment:
+EOF
+            fi
+            
+            cat >> "$compose_file" <<EOF
+      - MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - PORT=8080
+      - HOST=0.0.0.0
+      - WORKERS=${workers}
+      - THREADS=4
+      - CUDA_VISIBLE_DEVICES=${gpu_id}
+    volumes:
+      - huggingface_cache:/app/.cache/huggingface
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${gpu_id}']
+              capabilities: [gpu]
+    networks:
+      - embedding-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+EOF
+        done
     fi
     
     # 添加Nginx负载均衡（如果多个实例）
