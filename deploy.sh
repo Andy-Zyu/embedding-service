@@ -479,18 +479,38 @@ start_services() {
     docker compose -f docker-compose.deploy.yml up -d
     
     print_info "等待服务启动..."
-    sleep 10
+    
+    # GPU服务启动需要更长时间（模型加载）
+    if [ "$VERSION" == "gpu" ]; then
+        print_info "GPU服务启动需要较长时间（加载模型），请耐心等待..."
+        sleep 20
+    else
+        sleep 10
+    fi
     
     # 检查服务状态
     local healthy=0
-    local max_attempts=30
+    local max_attempts=60  # 增加到60次，总共120秒
+    
+    print_info "检查服务健康状态..."
     for i in $(seq 1 $max_attempts); do
-        if curl -s http://localhost:${SERVICE_PORT}/health > /dev/null 2>&1; then
-            healthy=1
-            break
+        # 首先检查容器是否在运行
+        local running=$(docker compose -f docker-compose.deploy.yml ps --status running 2>/dev/null | grep -c "embedding-service")
+        
+        if [ "$running" -gt 0 ]; then
+            # 容器在运行，检查健康端点
+            if curl -s --connect-timeout 5 --max-time 10 http://localhost:${SERVICE_PORT}/health > /dev/null 2>&1; then
+                healthy=1
+                break
+            fi
         fi
+        
         if [ $i -lt $max_attempts ]; then
-            echo -n "."
+            if [ $((i % 10)) -eq 0 ]; then
+                echo -n " [${i}s]"
+            else
+                echo -n "."
+            fi
             sleep 2
         fi
     done
@@ -504,10 +524,37 @@ start_services() {
         print_info "服务状态:"
         docker compose -f docker-compose.deploy.yml ps
     else
-        print_warning "服务可能还在启动中，请稍后检查"
-        print_info "可以使用以下命令查看状态:"
-        echo "  docker compose -f docker-compose.deploy.yml ps"
-        echo "  docker compose -f docker-compose.deploy.yml logs"
+        print_warning "健康检查超时，但服务可能仍在启动中"
+        
+        # 显示当前容器状态
+        echo ""
+        print_info "当前容器状态:"
+        docker compose -f docker-compose.deploy.yml ps
+        
+        echo ""
+        print_info "查看详细日志的命令:"
+        echo "  docker compose -f docker-compose.deploy.yml logs -f"
+        
+        echo ""
+        print_info "如果是GPU服务，模型加载可能需要更长时间"
+        print_info "您可以继续等待或手动检查服务状态"
+        
+        # 询问是否继续等待
+        echo ""
+        read -p "是否继续等待60秒? (y/n): " continue_wait
+        if [ "$continue_wait" == "y" ] || [ "$continue_wait" == "Y" ]; then
+            print_info "继续等待..."
+            for i in $(seq 1 30); do
+                if curl -s --connect-timeout 5 --max-time 10 http://localhost:${SERVICE_PORT}/health > /dev/null 2>&1; then
+                    print_success "服务启动成功！"
+                    return
+                fi
+                echo -n "."
+                sleep 2
+            done
+            echo ""
+            print_warning "仍未就绪，请手动检查日志"
+        fi
     fi
 }
 
