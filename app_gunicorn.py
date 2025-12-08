@@ -7,13 +7,31 @@ import os
 import multiprocessing
 import torch
 
-# 预加载模型（在worker启动前）
+# Worker初始化钩子（避免CUDA fork问题）
+def post_fork(server, worker):
+    """Worker进程fork后的回调
+    
+    说明：
+    - CUDA不支持在fork的子进程中使用，所以不能在主进程预加载CUDA模型
+    - 改为在每个worker fork后独立加载模型
+    - 虽然每个worker都加载模型，但这是GPU + multiprocessing的限制
+    """
+    print(f"Worker {worker.pid} forked, preloading model...")
+    try:
+        from app import load_model
+        load_model()
+        print(f"Worker {worker.pid}: Model loaded successfully!")
+    except Exception as e:
+        print(f"Worker {worker.pid}: Failed to load model: {e}")
+        import traceback
+        traceback.print_exc()
+
 def on_starting(server):
     """Gunicorn启动时的回调"""
-    print("Preloading model...")
-    from app import load_model
-    load_model()
-    print("Model preloaded successfully")
+    print("=" * 60)
+    print("Starting Gunicorn server...")
+    print("Model will be loaded in each worker after fork (CUDA requirement)")
+    print("=" * 60)
 
 # Gunicorn配置
 bind = f"{os.getenv('HOST', '0.0.0.0')}:{os.getenv('PORT', '8080')}"
@@ -42,7 +60,7 @@ errorlog = '-'   # 输出到stderr
 loglevel = os.getenv('LOG_LEVEL', 'info')
 
 # 性能优化
-preload_app = True  # 预加载应用，共享模型内存
+preload_app = True  # 预加载应用代码（但不预加载CUDA模型）
 worker_tmp_dir = '/dev/shm'  # 使用内存文件系统加速
 
 print(f"Gunicorn configuration:")

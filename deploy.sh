@@ -16,11 +16,14 @@ GPU_COUNT=0
 GPU_IDS=()
 GPU_MEMORY=0
 INSTANCE_COUNT=0
-SERVICE_PORT=9000
+SERVICE_PORT=18730
 ENABLE_TEST=false
 TEST_TYPE=""
 TEST_CONCURRENCY=0
 TEST_IMAGE_PATH="test/images/test.png"
+MODEL_DOWNLOAD_MODE=""  # "host" 或 "container"
+HF_CACHE_DIR=""  # 宿主机HuggingFace缓存目录
+MODEL_NAME="google/siglip2-so400m-patch16-naflex"
 
 # 打印带颜色的消息
 print_info() {
@@ -151,6 +154,55 @@ configure_gpu() {
     fi
     
     print_info "根据显存配置，每个实例将使用 $workers_per_instance workers"
+    
+    # 询问模型下载方式
+    echo ""
+    print_info "模型下载方式配置"
+    echo "  1) 在宿主机先下载模型并挂载（推荐，启动更快）"
+    echo "  2) 让Docker容器在运行时下载模型（首次启动较慢）"
+    read -p "请选择模型下载方式 (1/2, 默认: 1): " download_choice
+    
+    if [ -z "$download_choice" ]; then
+        download_choice=1
+    fi
+    
+    case $download_choice in
+        1)
+            MODEL_DOWNLOAD_MODE="host"
+            print_success "已选择：宿主机下载模型并挂载"
+            
+            # 询问缓存目录
+            echo ""
+            read -p "请输入HuggingFace模型缓存目录路径 (默认: ./hf_cache): " cache_dir
+            if [ -z "$cache_dir" ]; then
+                HF_CACHE_DIR="./hf_cache"
+            else
+                HF_CACHE_DIR="$cache_dir"
+            fi
+            
+            # 转换为绝对路径
+            if [ ! -d "$HF_CACHE_DIR" ]; then
+                mkdir -p "$HF_CACHE_DIR"
+            fi
+            HF_CACHE_DIR=$(cd "$HF_CACHE_DIR" && pwd)
+            
+            print_info "模型缓存目录: $HF_CACHE_DIR"
+            ;;
+        2)
+            MODEL_DOWNLOAD_MODE="container"
+            print_success "已选择：容器运行时下载模型"
+            print_warning "首次启动可能需要2-5分钟下载模型，请耐心等待"
+            ;;
+        *)
+            print_error "无效选择，默认使用宿主机下载方式"
+            MODEL_DOWNLOAD_MODE="host"
+            HF_CACHE_DIR="./hf_cache"
+            if [ ! -d "$HF_CACHE_DIR" ]; then
+                mkdir -p "$HF_CACHE_DIR"
+            fi
+            HF_CACHE_DIR=$(cd "$HF_CACHE_DIR" && pwd)
+            ;;
+    esac
 }
 
 # 配置CPU
@@ -174,22 +226,139 @@ configure_port() {
     print_info "端口配置"
     
     if [ $INSTANCE_COUNT -gt 1 ]; then
-        read -p "请输入Nginx负载均衡器端口 (默认: 9000): " port
+        read -p "请输入Nginx负载均衡器端口 (默认: 18730): " port
         if [ -z "$port" ]; then
-            SERVICE_PORT=9000
+            SERVICE_PORT=18730
         else
             SERVICE_PORT=$port
         fi
         print_info "Nginx将监听端口: $SERVICE_PORT (暴露到宿主机)"
         print_info "后端 $INSTANCE_COUNT 个实例将在Docker内部网络通信（不暴露端口）"
     else
-        read -p "请输入服务端口 (默认: 9000): " port
+        read -p "请输入服务端口 (默认: 18730): " port
         if [ -z "$port" ]; then
-            SERVICE_PORT=9000
+            SERVICE_PORT=18730
         else
             SERVICE_PORT=$port
         fi
         print_info "服务将监听端口: $SERVICE_PORT"
+    fi
+}
+
+# 在宿主机下载模型
+download_model_on_host() {
+    if [ "$MODEL_DOWNLOAD_MODE" != "host" ]; then
+        return
+    fi
+    
+    echo ""
+    print_info "开始在宿主机下载模型..."
+    print_info "模型名称: $MODEL_NAME"
+    print_info "缓存目录: $HF_CACHE_DIR"
+    
+    # 检查Python是否可用
+    if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
+        print_error "未找到Python，无法下载模型"
+        print_error "请先安装Python或选择容器内下载方式"
+        exit 1
+    fi
+    
+    # 检查transformers库是否安装
+    local python_cmd="python3"
+    if ! command -v python3 &> /dev/null; then
+        python_cmd="python"
+    fi
+    
+    print_info "检查transformers库..."
+    if ! $python_cmd -c "import transformers" 2>/dev/null; then
+        print_warning "transformers库未安装，正在安装..."
+        print_info "使用清华大学PyPI镜像源加速安装..."
+        # 使用清华大学镜像源安装（与Dockerfile保持一致）
+        $python_cmd -m pip install --quiet \
+            -i https://pypi.tuna.tsinghua.edu.cn/simple \
+            --trusted-host pypi.tuna.tsinghua.edu.cn \
+            transformers accelerate torch pillow 2>/dev/null || {
+            print_error "无法安装transformers库，请手动安装: pip install transformers accelerate torch pillow"
+            print_error "或检查网络连接和镜像源配置"
+            exit 1
+        }
+        print_success "transformers库安装完成"
+    fi
+    
+    # 设置环境变量
+    local hf_endpoint="${HF_ENDPOINT:-https://hf-mirror.com}"
+    export HF_HOME="$HF_CACHE_DIR"
+    export TRANSFORMERS_CACHE="$HF_CACHE_DIR"
+    export HF_ENDPOINT="$hf_endpoint"
+    
+    print_info "使用HuggingFace镜像: $hf_endpoint"
+    print_info "开始下载模型（这可能需要几分钟）..."
+    
+    # 下载模型
+    HF_ENDPOINT="$hf_endpoint" $python_cmd << PYTHON_SCRIPT
+import os
+import sys
+
+# 必须在导入transformers之前设置环境变量
+hf_endpoint = "$hf_endpoint"
+os.environ["HF_ENDPOINT"] = hf_endpoint
+os.environ["HF_HOME"] = "$HF_CACHE_DIR"
+os.environ["TRANSFORMERS_CACHE"] = "$HF_CACHE_DIR"
+
+# 现在导入transformers库（会使用上面设置的HF_ENDPOINT）
+from transformers import AutoModel, AutoProcessor
+
+model_name = "$MODEL_NAME"
+cache_dir = "$HF_CACHE_DIR"
+
+print(f"Downloading model: {model_name}")
+print(f"Cache directory: {cache_dir}")
+print(f"HuggingFace endpoint: {hf_endpoint}")
+print("This may take several minutes, please wait...", flush=True)
+
+try:
+    # 下载模型
+    print("Downloading model weights...", flush=True)
+    model = AutoModel.from_pretrained(
+        model_name,
+        cache_dir=cache_dir,
+        trust_remote_code=True,
+        local_files_only=False
+    )
+    print("Model weights downloaded successfully!", flush=True)
+    
+    # 下载processor
+    print("Downloading processor...", flush=True)
+    processor = AutoProcessor.from_pretrained(
+        model_name,
+        cache_dir=cache_dir,
+        trust_remote_code=True,
+        local_files_only=False
+    )
+    print("Processor downloaded successfully!", flush=True)
+    
+    print("=" * 60)
+    print("Model download completed successfully!")
+    print("=" * 60)
+    
+except Exception as e:
+    print(f"ERROR: Failed to download model: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+PYTHON_SCRIPT
+
+    if [ $? -eq 0 ]; then
+        print_success "模型下载完成！"
+        
+        # 显示缓存目录大小
+        if command -v du &> /dev/null; then
+            local cache_size=$(du -sh "$HF_CACHE_DIR" 2>/dev/null | cut -f1)
+            print_info "缓存目录大小: $cache_size"
+        fi
+    else
+        print_error "模型下载失败，请检查网络连接或手动下载"
+        exit 1
     fi
 }
 
@@ -202,7 +371,18 @@ build_image() {
         docker build -f cpu/Dockerfile -t embedding-service:cpu .
         print_success "CPU镜像构建完成"
     else
-        docker build --platform linux/amd64 -f gpu/Dockerfile -t embedding-service:gpu .
+        # GPU版本构建
+        if [ "$MODEL_DOWNLOAD_MODE" == "host" ]; then
+            # 如果选择宿主机下载，使用build arg跳过Dockerfile中的模型下载
+            print_info "检测到宿主机下载模式，跳过Dockerfile中的模型下载步骤..."
+            docker build --platform linux/amd64 \
+                --build-arg SKIP_MODEL_DOWNLOAD=true \
+                -f gpu/Dockerfile \
+                -t embedding-service:gpu .
+        else
+            # 容器内下载模式，正常构建（会在Dockerfile中下载模型）
+            docker build --platform linux/amd64 -f gpu/Dockerfile -t embedding-service:gpu .
+        fi
         print_success "GPU镜像构建完成"
     fi
 }
@@ -295,10 +475,23 @@ EOF
       - HOST=0.0.0.0
       - WORKERS=${workers}
       - THREADS=4
-      - CUDA_VISIBLE_DEVICES=${gpu_id}
+      - CUDA_VISIBLE_DEVICES=0
     volumes:
+EOF
+            # 根据下载方式选择volume配置
+            if [ "$MODEL_DOWNLOAD_MODE" == "host" ] && [ ! -z "$HF_CACHE_DIR" ]; then
+                cat >> "$compose_file" <<EOF
+      - ${HF_CACHE_DIR}:/app/.cache/huggingface
+EOF
+            else
+                cat >> "$compose_file" <<EOF
       - huggingface_cache:/app/.cache/huggingface
+EOF
+            fi
+            
+            cat >> "$compose_file" <<EOF
     restart: unless-stopped
+    runtime: nvidia
     deploy:
       resources:
         reservations:
@@ -348,11 +541,17 @@ EOF
 EOF
     fi
     
-    cat >> "$compose_file" <<EOF
+    # 只有在使用Docker volume时才定义volumes
+    if [ "$MODEL_DOWNLOAD_MODE" != "host" ] || [ -z "$HF_CACHE_DIR" ]; then
+        cat >> "$compose_file" <<EOF
 volumes:
   huggingface_cache:
     driver: local
 
+EOF
+    fi
+    
+    cat >> "$compose_file" <<EOF
 networks:
   embedding-network:
     driver: bridge
@@ -483,14 +682,17 @@ start_services() {
     # GPU服务启动需要更长时间（模型加载）
     if [ "$VERSION" == "gpu" ]; then
         print_info "GPU服务启动需要较长时间（加载模型），请耐心等待..."
-        sleep 20
+        print_info "模型加载可能需要2-5分钟，取决于模型大小和网络速度..."
+        sleep 30  # 增加初始等待时间
+        # GPU服务需要更长的健康检查时间（最多10分钟）
+        local max_attempts=300  # 300次 * 2秒 = 600秒 = 10分钟
     else
         sleep 10
+        local max_attempts=60  # 60次 * 2秒 = 120秒
     fi
     
     # 检查服务状态
     local healthy=0
-    local max_attempts=60  # 增加到60次，总共120秒
     
     print_info "检查服务健康状态..."
     for i in $(seq 1 $max_attempts); do
@@ -499,8 +701,30 @@ start_services() {
         
         if [ "$running" -gt 0 ]; then
             # 容器在运行，检查健康端点
-            if curl -s --connect-timeout 5 --max-time 10 http://localhost:${SERVICE_PORT}/health > /dev/null 2>&1; then
+            local health_response=$(curl -s --connect-timeout 5 --max-time 10 http://localhost:${SERVICE_PORT}/health 2>&1)
+            local curl_exit_code=$?
+            
+            if [ $curl_exit_code -eq 0 ] && echo "$health_response" | grep -q "ok"; then
                 healthy=1
+                break
+            fi
+            
+            # 如果是GPU服务，每30秒显示一次模型加载进度
+            if [ "$VERSION" == "gpu" ] && [ $((i % 15)) -eq 0 ]; then
+                echo ""
+                print_info "模型仍在加载中... (已等待 $((i * 2)) 秒)"
+                # 显示容器日志的最后几行，帮助了解进度
+                local last_log=$(docker compose -f docker-compose.deploy.yml logs --tail=3 2>/dev/null | grep -i "model\|loading\|preload" | tail -1)
+                if [ ! -z "$last_log" ]; then
+                    echo "  最新日志: $last_log"
+                fi
+            fi
+        else
+            # 容器未运行，检查是否有错误
+            local exited=$(docker compose -f docker-compose.deploy.yml ps --status exited 2>/dev/null | grep -c "embedding-service")
+            if [ "$exited" -gt 0 ]; then
+                print_error "检测到容器已退出，请检查日志:"
+                docker compose -f docker-compose.deploy.yml logs --tail=20
                 break
             fi
         fi
@@ -574,9 +798,9 @@ run_benchmark() {
             return 1
         fi
         
-        # 转换图片为base64
+        # 转换图片为base64（去除换行符，确保JSON格式正确）
         print_info "正在转换图片为base64编码..." >&2
-        local image_base64=$(base64 -i "$TEST_IMAGE_PATH" 2>/dev/null || base64 "$TEST_IMAGE_PATH" 2>/dev/null)
+        local image_base64=$(base64 -w 0 "$TEST_IMAGE_PATH" 2>/dev/null || base64 -i "$TEST_IMAGE_PATH" 2>/dev/null | tr -d '\n' || base64 "$TEST_IMAGE_PATH" 2>/dev/null | tr -d '\n')
         if [ -z "$image_base64" ]; then
             print_error "图片编码失败" >&2
             return 1
@@ -612,11 +836,15 @@ run_benchmark() {
         > "$temp_file"
         
         print_info "开始发送 $concurrency 个图片embedding请求..." >&2
+        # 创建临时JSON文件（避免命令行参数过长）
+        local json_temp_file="/tmp/embed_test_$$.json"
+        echo "{\"images\": [\"${image_data}\"]}" > "$json_temp_file"
+        
         for i in $(seq 1 $concurrency); do
             (
                 local response=$(curl -s -X POST "$url/embed" \
                     -H "Content-Type: application/json" \
-                    -d "{\"images\": [\"${image_data}\"]}" \
+                    -d @"$json_temp_file" \
                     -w "%{time_total}|%{http_code}" \
                     --max-time 60 \
                     -o /dev/null 2>&1)
@@ -639,6 +867,9 @@ run_benchmark() {
         
         wait
         echo "" >&2
+        
+        # 清理临时JSON文件
+        rm -f "$json_temp_file"
         
         local end_time=$(date +%s.%N)
         local total_time=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "0")
@@ -938,6 +1169,11 @@ main() {
     fi
     
     configure_port
+    
+    # 如果是GPU版本且选择宿主机下载，先下载模型
+    if [ "$VERSION" == "gpu" ]; then
+        download_model_on_host
+    fi
     
     build_image
     

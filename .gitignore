@@ -59,3 +59,6 @@ test_*.json
 *_token
 GITHUB_TOKEN
 .env.local
+
+# model
+hf_cache/
