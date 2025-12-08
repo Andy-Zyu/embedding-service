@@ -4,6 +4,10 @@ FROM pytorch/pytorch:2.3.1-cuda11.8-cudnn8-runtime
 # 设置工作目录
 WORKDIR /app
 
+# 配置apt使用国内镜像源（阿里云 - Ubuntu）
+RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list 2>/dev/null || true && \
+    sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list 2>/dev/null || true
+
 # 配置pip使用国内镜像源（清华大学镜像）
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn

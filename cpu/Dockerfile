@@ -4,6 +4,12 @@ FROM python:3.10-slim
 # 设置工作目录
 WORKDIR /app
 
+# 配置apt使用国内镜像源（阿里云）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    (echo "deb http://mirrors.aliyun.com/debian/ bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+     echo "deb http://mirrors.aliyun.com/debian/ bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+     echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list)
+
 # 配置pip使用国内镜像源（清华大学镜像）
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn

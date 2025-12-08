@@ -18,6 +18,14 @@ services:
       - WORKER_CLASS=sync
       - THREADS=2
       - TIMEOUT=120
+      # 并发控制
+      - MAX_CONCURRENT=20
+      - MAX_WAITING=50
+      - WAIT_TIMEOUT=60
+      # 图片下载配置
+      - IMAGE_DOWNLOAD_RETRIES=3
+      - IMAGE_DOWNLOAD_TIMEOUT=30
+      - IMAGE_DOWNLOAD_RETRY_DELAY=1.0
     volumes:
       - huggingface_cache:/app/.cache/huggingface
     restart: unless-stopped
@@ -54,6 +62,14 @@ services:
       - THREADS=4
       - TIMEOUT=120
       - CUDA_VISIBLE_DEVICES=0
+      # 并发控制
+      - MAX_CONCURRENT=20
+      - MAX_WAITING=50
+      - WAIT_TIMEOUT=60
+      # 图片下载配置
+      - IMAGE_DOWNLOAD_RETRIES=3
+      - IMAGE_DOWNLOAD_TIMEOUT=30
+      - IMAGE_DOWNLOAD_RETRY_DELAY=1.0
     volumes:
       - huggingface_cache:/app/.cache/huggingface
     restart: unless-stopped
