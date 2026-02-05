@@ -5,7 +5,16 @@ Gunicorn配置文件
 """
 import os
 import multiprocessing
-import torch
+
+PRELOAD_MODELS = os.getenv('PRELOAD_MODELS', '0').lower() in ('1', 'true', 'yes', 'y')
+
+def _gpu_env_enabled() -> bool:
+    cuda_visible = os.getenv('CUDA_VISIBLE_DEVICES', '')
+    nvidia_visible = os.getenv('NVIDIA_VISIBLE_DEVICES', '')
+    for value in (cuda_visible, nvidia_visible):
+        if value and value.lower() not in ('none', 'void', '-1'):
+            return True
+    return False
 
 # Worker初始化钩子（避免CUDA fork问题）
 def post_fork(server, worker):
@@ -16,10 +25,13 @@ def post_fork(server, worker):
     - 改为在每个worker fork后独立加载模型
     - 虽然每个worker都加载模型，但这是GPU + multiprocessing的限制
     """
+    if not PRELOAD_MODELS:
+        print(f"Worker {worker.pid} forked, skip preload (PRELOAD_MODELS=0)")
+        return
     print(f"Worker {worker.pid} forked, preloading model...")
     try:
-        from app import load_model
-        load_model()
+        from app import load_model, DEFAULT_MODEL_NAME
+        load_model(DEFAULT_MODEL_NAME)
         print(f"Worker {worker.pid}: Model loaded successfully!")
     except Exception as e:
         print(f"Worker {worker.pid}: Failed to load model: {e}")
@@ -41,7 +53,7 @@ workers = int(os.getenv('WORKERS', '0'))  # 0表示自动检测CPU核心数
 if workers == 0:
     workers = multiprocessing.cpu_count()
     # GPU版本建议使用更少的workers（避免GPU内存竞争）
-    if torch.cuda.is_available():
+    if _gpu_env_enabled():
         workers = min(workers, 2)  # GPU版本建议1-2个worker
         print(f"GPU detected, setting workers to {workers}")
     else:
@@ -61,6 +73,11 @@ loglevel = os.getenv('LOG_LEVEL', 'info')
 
 # 性能优化
 preload_app = True  # 预加载应用代码（但不预加载CUDA模型）
+preload_app_env = os.getenv('PRELOAD_APP')
+if preload_app_env is None:
+    preload_app = not _gpu_env_enabled()
+else:
+    preload_app = preload_app_env.lower() in ('1', 'true', 'yes', 'y')
 worker_tmp_dir = '/dev/shm'  # 使用内存文件系统加速
 
 print(f"Gunicorn configuration:")

@@ -14,7 +14,10 @@ services:
     ports:
       - "8080-8099:8080"  # 端口范围，支持多个实例
     environment:
-      - MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - DEFAULT_MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - AVAILABLE_MODELS=google/siglip2-so400m-patch16-naflex,infgrad/stella-mrl-large-zh-v3.5-1792d
+      - PRELOAD_MODELS=0
+      - SENTENCE_TRANSFORMERS_MODELS=infgrad/stella-mrl-large-zh-v3.5-1792d
       - PORT=8080
       - HOST=0.0.0.0
       - WORKERS=4
@@ -30,7 +33,7 @@ services:
       - IMAGE_DOWNLOAD_TIMEOUT=30
       - IMAGE_DOWNLOAD_RETRY_DELAY=1.0
     volumes:
-      - huggingface_cache:/app/.cache/huggingface
+      - ./hf_cache:/app/.cache/huggingface
     restart: unless-stopped
     deploy:
       replicas: 1  # 默认1个实例，可通过--scale参数扩展
@@ -60,7 +63,10 @@ services:
     ports:
       - "8100-8119:8080"  # 端口范围，支持多个实例
     environment:
-      - MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - DEFAULT_MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - AVAILABLE_MODELS=google/siglip2-so400m-patch16-naflex,infgrad/stella-mrl-large-zh-v3.5-1792d
+      - PRELOAD_MODELS=0
+      - SENTENCE_TRANSFORMERS_MODELS=infgrad/stella-mrl-large-zh-v3.5-1792d
       - PORT=8080
       - HOST=0.0.0.0
       - WORKERS=2
@@ -77,7 +83,7 @@ services:
       - IMAGE_DOWNLOAD_TIMEOUT=30
       - IMAGE_DOWNLOAD_RETRY_DELAY=1.0
     volumes:
-      - huggingface_cache:/app/.cache/huggingface
+      - ./hf_cache:/app/.cache/huggingface
     restart: unless-stopped
     deploy:
       replicas: 1  # 默认1个实例，可通过--scale参数扩展
@@ -110,10 +116,6 @@ services:
     restart: unless-stopped
     networks:
       - embedding-network
-
-volumes:
-  huggingface_cache:
-    driver: local
 
 networks:
   embedding-network:

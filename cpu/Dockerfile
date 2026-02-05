@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY app.py app_gunicorn.py ./
 
 # 设置环境变量
-ENV MODEL_NAME=google/siglip2-so400m-patch16-naflex
+ENV DEFAULT_MODEL_NAME=google/siglip2-so400m-patch16-naflex
 ENV PORT=8080
 ENV HOST=0.0.0.0
 ENV WORKERS=4

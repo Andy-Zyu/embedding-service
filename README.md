@@ -1,6 +1,6 @@
 # Embedding Service Docker镜像
 
-这是一个基于SigLIP模型的embedding向量生成服务，支持图像和文本的embedding生成。提供了CPU和GPU两个版本的Docker镜像。
+这是一个基于SigLIP模型的embedding向量生成服务，支持图像和文本的embedding生成。提供了CPU和GPU两个版本的Docker镜像，并支持按请求选择不同模型。
 
 ## 功能特性
 
@@ -9,6 +9,7 @@
 - 🚀 **高性能**: GPU版本支持CUDA加速
 - 💻 **CPU支持**: CPU版本可在无GPU环境下运行
 - 🔍 **健康检查**: 内置健康检查接口
+- 🧩 **多模型选择**: 可配置可用模型列表，请求中指定 `model` 进行选择
 - 📦 **Docker化**: 开箱即用的Docker镜像
 
 ## API接口
@@ -101,7 +102,9 @@ docker build -f gpu/Dockerfile -t embedding-service:gpu .
 docker run -d \
   --name embedding-service-cpu \
   -p 8080:8080 \
-  -e MODEL_NAME=google/siglip2-so400m-patch16-naflex \
+  -e DEFAULT_MODEL_NAME=google/siglip2-so400m-patch16-naflex \
+  -e AVAILABLE_MODELS=google/siglip2-so400m-patch16-naflex,infgrad/stella-mrl-large-zh-v3.5-1792d \
+  -e SENTENCE_TRANSFORMERS_MODELS=infgrad/stella-mrl-large-zh-v3.5-1792d \
   embedding-service:cpu
 ```
 
@@ -111,7 +114,9 @@ docker run -d \
   --name embedding-service-gpu \
   --gpus all \
   -p 8081:8080 \
-  -e MODEL_NAME=google/siglip2-so400m-patch16-naflex \
+  -e DEFAULT_MODEL_NAME=google/siglip2-so400m-patch16-naflex \
+  -e AVAILABLE_MODELS=google/siglip2-so400m-patch16-naflex,infgrad/stella-mrl-large-zh-v3.5-1792d \
+  -e SENTENCE_TRANSFORMERS_MODELS=infgrad/stella-mrl-large-zh-v3.5-1792d \
   -e CUDA_VISIBLE_DEVICES=0 \
   embedding-service:gpu
 ```
@@ -195,7 +200,10 @@ curl http://localhost/health
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `MODEL_NAME` | `google/siglip2-so400m-patch16-naflex` | HuggingFace模型名称 |
+| `DEFAULT_MODEL_NAME` | `google/siglip2-so400m-patch16-naflex` | 默认模型名称 |
+| `AVAILABLE_MODELS` | `google/...` | 可用模型列表（逗号分隔） |
+| `PRELOAD_MODELS` | `0` | 是否启动时预加载全部模型 |
+| `SENTENCE_TRANSFORMERS_MODELS` | `infgrad/...` | 使用 SentenceTransformers 加载的模型列表（逗号分隔） |
 | `PORT` | `8080` | 服务监听端口 |
 | `HOST` | `0.0.0.0` | 服务监听地址 |
 | `WORKERS` | `4` (CPU) / `2` (GPU) | Gunicorn worker进程数 |
@@ -203,17 +211,19 @@ curl http://localhost/health
 | `WORKER_CLASS` | `sync` | Worker类型（sync/gevent/gthread） |
 | `TIMEOUT` | `120` | 请求超时时间（秒） |
 | `CUDA_VISIBLE_DEVICES` | `0` | GPU版本使用的GPU设备ID |
+| `AUTO_DETECT_INPUT_TYPE` | `0` | 仅对 `/v1/embeddings` 生效：当请求未显式提供 `input_type` 时，若输入**整体看起来像图片**（data:image/、图片URL、图片路径），自动按 `image` 处理 |
+| `REJECT_MISMATCH_INPUT_TYPE` | `0` | 仅对 `/v1/embeddings` 生效：当 `input_type=text` 但输入看起来像图片时直接返回 400，避免把图片URL/base64当文本导致“疑似向量塌缩” |
 
 ## 挂载HuggingFace缓存（可选）
 
-为了加速模型加载，可以将HuggingFace缓存目录挂载到容器：
+为了加速模型加载，可以将HuggingFace缓存目录挂载到容器（推荐使用项目内 `./hf_cache`）：
 
 ```bash
 docker run -d \
   --name embedding-service-gpu \
   --gpus all \
   -p 8081:8080 \
-  -v /path/to/huggingface/cache:/app/.cache/huggingface \
+  -v ./hf_cache:/app/.cache/huggingface \
   embedding-service:gpu
 ```
 

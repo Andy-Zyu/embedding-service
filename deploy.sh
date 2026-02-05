@@ -23,7 +23,11 @@ TEST_CONCURRENCY=0
 TEST_IMAGE_PATH="test/images/test.png"
 MODEL_DOWNLOAD_MODE=""  # "host" 或 "container"
 HF_CACHE_DIR=""  # 宿主机HuggingFace缓存目录
-MODEL_NAME="google/siglip2-so400m-patch16-naflex"
+DEFAULT_MODEL_NAME="google/siglip2-so400m-patch16-naflex"
+AVAILABLE_MODELS="google/siglip2-so400m-patch16-naflex,infgrad/stella-mrl-large-zh-v3.5-1792d,Marqo/marqo-fashionSigLIP"
+PRELOAD_MODELS="0"
+SENTENCE_TRANSFORMERS_MODELS="infgrad/stella-mrl-large-zh-v3.5-1792d"
+MARQO_FASHION_MODELS="Marqo/marqo-fashionSigLIP"
 
 # 打印带颜色的消息
 print_info() {
@@ -253,7 +257,9 @@ download_model_on_host() {
     
     echo ""
     print_info "开始在宿主机下载模型..."
-    print_info "模型名称: $MODEL_NAME"
+    print_info "默认模型: $DEFAULT_MODEL_NAME"
+    print_info "可用模型: $AVAILABLE_MODELS"
+    print_info "SentenceTransformers模型: $SENTENCE_TRANSFORMERS_MODELS"
     print_info "缓存目录: $HF_CACHE_DIR"
     
     # 检查Python是否可用
@@ -307,35 +313,59 @@ os.environ["TRANSFORMERS_CACHE"] = "$HF_CACHE_DIR"
 
 # 现在导入transformers库（会使用上面设置的HF_ENDPOINT）
 from transformers import AutoModel, AutoProcessor
+from huggingface_hub import snapshot_download
 
-model_name = "$MODEL_NAME"
+model_list_raw = "$AVAILABLE_MODELS"
+default_model = "$DEFAULT_MODEL_NAME"
 cache_dir = "$HF_CACHE_DIR"
+marqo_models_raw = "$MARQO_FASHION_MODELS"
+marqo_models = [m.strip() for m in marqo_models_raw.split(",") if m.strip()]
 
-print(f"Downloading model: {model_name}")
+model_names = [m.strip() for m in model_list_raw.split(",") if m.strip()]
+if not model_names:
+    model_names = [default_model]
+elif default_model not in model_names:
+    model_names.append(default_model)
+
+print(f"Downloading models: {', '.join(model_names)}")
 print(f"Cache directory: {cache_dir}")
 print(f"HuggingFace endpoint: {hf_endpoint}")
 print("This may take several minutes, please wait...", flush=True)
 
 try:
-    # 下载模型
-    print("Downloading model weights...", flush=True)
-    model = AutoModel.from_pretrained(
-        model_name,
-        cache_dir=cache_dir,
-        trust_remote_code=True,
-        local_files_only=False
-    )
-    print("Model weights downloaded successfully!", flush=True)
-    
-    # 下载processor
-    print("Downloading processor...", flush=True)
-    processor = AutoProcessor.from_pretrained(
-        model_name,
-        cache_dir=cache_dir,
-        trust_remote_code=True,
-        local_files_only=False
-    )
-    print("Processor downloaded successfully!", flush=True)
+    for model_name in model_names:
+        print("=" * 60)
+        print(f"Downloading model: {model_name}", flush=True)
+        print("=" * 60)
+
+        if model_name in marqo_models:
+            print("Downloading model snapshot (Marqo)...", flush=True)
+            snapshot_download(
+                repo_id=model_name,
+                cache_dir=cache_dir,
+                local_files_only=False
+            )
+            print("Model snapshot downloaded successfully!", flush=True)
+        else:
+            # 下载模型
+            print("Downloading model weights...", flush=True)
+            AutoModel.from_pretrained(
+                model_name,
+                cache_dir=cache_dir,
+                trust_remote_code=True,
+                local_files_only=False
+            )
+            print("Model weights downloaded successfully!", flush=True)
+
+            # 下载processor
+            print("Downloading processor...", flush=True)
+            AutoProcessor.from_pretrained(
+                model_name,
+                cache_dir=cache_dir,
+                trust_remote_code=True,
+                local_files_only=False
+            )
+            print("Processor downloaded successfully!", flush=True)
     
     print("=" * 60)
     print("Model download completed successfully!")
@@ -420,13 +450,29 @@ EOF
             fi
             
             cat >> "$compose_file" <<EOF
-      - MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - DEFAULT_MODEL_NAME=${DEFAULT_MODEL_NAME}
+      - AVAILABLE_MODELS=${AVAILABLE_MODELS}
+      - PRELOAD_MODELS=${PRELOAD_MODELS}
+      - SENTENCE_TRANSFORMERS_MODELS=${SENTENCE_TRANSFORMERS_MODELS}
+      - MARQO_FASHION_MODELS=${MARQO_FASHION_MODELS}
       - PORT=8080
       - HOST=0.0.0.0
       - WORKERS=4
       - THREADS=2
     volumes:
+EOF
+            # 根据下载方式选择volume配置
+            if [ "$MODEL_DOWNLOAD_MODE" == "host" ] && [ ! -z "$HF_CACHE_DIR" ]; then
+                cat >> "$compose_file" <<EOF
+      - ${HF_CACHE_DIR}:/app/.cache/huggingface
+EOF
+            else
+                cat >> "$compose_file" <<EOF
       - huggingface_cache:/app/.cache/huggingface
+EOF
+            fi
+
+            cat >> "$compose_file" <<EOF
     restart: unless-stopped
     networks:
       - embedding-network
@@ -470,7 +516,11 @@ EOF
             fi
             
             cat >> "$compose_file" <<EOF
-      - MODEL_NAME=google/siglip2-so400m-patch16-naflex
+      - DEFAULT_MODEL_NAME=${DEFAULT_MODEL_NAME}
+      - AVAILABLE_MODELS=${AVAILABLE_MODELS}
+      - PRELOAD_MODELS=${PRELOAD_MODELS}
+      - SENTENCE_TRANSFORMERS_MODELS=${SENTENCE_TRANSFORMERS_MODELS}
+      - MARQO_FASHION_MODELS=${MARQO_FASHION_MODELS}
       - PORT=8080
       - HOST=0.0.0.0
       - WORKERS=${workers}
